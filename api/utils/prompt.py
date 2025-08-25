@@ -1,63 +1,115 @@
 import json
-from typing import Any, List, Optional
+import logging
+import re
+from typing import Any, List
 
 from pydantic import BaseModel
 
-from .types import ClientAttachment, ToolInvocation
+logger = logging.getLogger(__name__)
 
 
 class ClientMessage(BaseModel):
     id: str
     role: str
     parts: List[dict[str, Any]]
-    experimental_attachments: Optional[List[ClientAttachment]] = None
-    toolInvocations: Optional[List[ToolInvocation]] = None
 
 
-def convert_to_openai_messages(messages: List[ClientMessage]):
-    openai_messages = []
+def convert_to_messages(messages: List[ClientMessage]):
+    converted_messages = []
 
     for message in messages:
         parts = message.parts
+        contents = []
 
-        if message.experimental_attachments:
-            for attachment in message.experimental_attachments:
-                if attachment.contentType.startswith("image"):
-                    parts.append(
-                        {"type": "image_url", "image_url": {"url": attachment.url}}
+        for part in parts:
+            part_type: str = part.get("type", "")
+
+            if part_type == "file":
+                media_type: str = part.get("mediaType", "")
+                filename: str = part.get("filename", "")
+                url: str = part.get("url", "")
+
+                if media_type.startswith("image"):
+                    match = re.match(r"data:([^;]+);base64,(.+)", url)
+
+                    if match:
+                        mime_type = match.group(1)
+                        data = match.group(2)
+                        file_format = mime_type.split("/")[1]
+
+                        contents.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": mime_type,
+                                    "data": data,
+                                },
+                            }
+                        )
+                elif media_type.startswith("text"):
+                    match = re.match(r"data:([^;]+);base64,(.+)", url)
+
+                    if match:
+                        mime_type = match.group(1)
+                        data = match.group(2)
+                        file_format = mime_type.split("/")[1]
+
+                        contents.append(
+                            {
+                                "type": "text",
+                                "text": json.dumps(
+                                    {
+                                        "format": file_format,
+                                        "name": filename,
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": mime_type,
+                                            "data": data,
+                                        },
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            }
+                        )
+
+            elif part_type.startswith("tool-"):
+                tool_id = part.get("toolCallId")
+                tool_name = part_type.removeprefix("tool-")
+                tool_input = part.get("input")
+                tool_output = part.get("output")
+
+                contents.append(
+                    {
+                        "type": "tool_use",
+                        "id": tool_id,
+                        "name": tool_name,
+                        "input": tool_input,
+                    }
+                )
+
+                if bool(tool_output):
+                    contents.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": json.dumps(tool_output),
+                        }
                     )
+            elif part_type == "text":
+                contents.append(part)
 
-                elif attachment.contentType.startswith("text"):
-                    parts.append({"type": "text", "text": attachment.url})
+        if bool(contents):
+            converted_messages.append({"role": message.role, "content": contents})
 
-        if message.toolInvocations:
-            tool_calls = [
-                {
-                    "id": tool_invocation.toolCallId,
-                    "type": "function",
-                    "function": {
-                        "name": tool_invocation.toolName,
-                        "arguments": json.dumps(tool_invocation.args),
-                    },
-                }
-                for tool_invocation in message.toolInvocations
-            ]
+    return converted_messages
 
-            openai_messages.append({"role": "assistant", "tool_calls": tool_calls})
 
-            tool_results = [
-                {
-                    "role": "tool",
-                    "content": json.dumps(tool_invocation.result),
-                    "tool_call_id": tool_invocation.toolCallId,
-                }
-                for tool_invocation in message.toolInvocations
-            ]
-
-            openai_messages.extend(tool_results)
-
-            continue
-
-        openai_messages.append({"role": message.role, "content": parts})
-
-    return openai_messages
+if __name__ == "__main__":
+    url = "data:text/plain;base64,dGVzdCBjb250ZW50IGZpbGVzLgp0aGlzIGlzIGEgZ29vZCBmaWxlLgo="
+    match = re.match(r"data:([^;]+);base64,(.+)", url)
+    if match:
+        mime_type = match.group(1)
+        data = match.group(2)
+        print(mime_type)
+        print(data)

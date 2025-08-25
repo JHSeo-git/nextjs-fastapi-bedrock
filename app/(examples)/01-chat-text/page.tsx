@@ -36,7 +36,7 @@ export default function Page() {
           sendMessage({ text: input });
           setInput("");
         }}
-        className="fixed bottom-0 flex flex-col w-full border-t"
+        className="fixed bottom-0 flex flex-col w-full border-t z-10 bg-white"
       >
         <input
           value={input}
